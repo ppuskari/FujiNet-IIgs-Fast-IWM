@@ -52,8 +52,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python3 tools/patch_spbench_p01b3.py
+          python3 tools/patch_spbench_p01b3_v2.py
           grep -q 'SPBENCH P0.1B3' iigs/spbench/src/SPBench.s
+          grep -q 'InitTextConsole' iigs/spbench/src/SPBench.s
           grep -q 'RawStageBuffer' iigs/spbench/src/SPBench.s
           if grep -q 'db    $41' iigs/spbench/src/SPBench.s; then
             echo 'Extended $41 call residue remains'
