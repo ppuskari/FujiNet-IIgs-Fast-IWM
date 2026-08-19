@@ -15,7 +15,7 @@ d47c40923fffeb8e50307507a946439b15a94bd7cab5eda3e7b6325ade92ab2d  ./docs/ARCHITE
 81152cfbeb398cbd689e4dc78914617cada7ebe503fc5fce06667fade3728877  ./scripts/Bootstrap-GitHub.ps1
 acdd1288b6ad42063410b5ea5efe6c3bbffb57fd0d5abf9350990410f7eca90e  ./scripts/New-Result.ps1
 89b8040a2da3c8223f8488c5e05f0a9a102f8c205ad9880c6bb1f52a126d518e  ./scripts/Run-Host-Checks.ps1
-ab2b4a8801bbe3d960f1a5209160817b09b29057fffe7cca208638dfd0a10d15  ./scripts/Setup-FujiNet-Worktree.ps1
+af0c8a7047f84caa75c0c9613b3095d833e19da94b4dbfea65ac80fe31ec51f1  ./scripts/Setup-FujiNet-Worktree.ps1
 30ab2076ec3b58bd4f9dad7d8a67a8ac2dab7bc3cda252ed1c1f07d7bb70d68b  ./scripts/Verify-Environment.ps1
 e890a8f070faf8737551ebb7bb5e0f322f017abd0e773b94004b616d673596ca  ./tools/tests/test_throughput_model.py
 a699788936809ca6706318b885273875b9f0e69f1667c95ca6b4c740ea7ed098  ./tools/throughput_model.py
