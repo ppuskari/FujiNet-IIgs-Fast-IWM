@@ -479,7 +479,8 @@ PrepareRawSmartPort
 
          PushLong #ThunkTemplate
          PushLong RawCodePtr
-         PushLong #ThunkSize
+         pea   $0000
+         pea   ThunkSize
          _BlockMove
 
 * Patch the application's long call to the allocated
@@ -517,7 +518,8 @@ RawPrepareFail
 AllocateRawThunk
          pha
          pha
-         PushLong #ThunkSize
+         pea   $0000
+         pea   ThunkSize
          PushWord MyID
          PushWord #RawThunkAttr
          PushLong #0
