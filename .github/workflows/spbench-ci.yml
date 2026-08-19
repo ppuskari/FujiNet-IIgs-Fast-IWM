@@ -1,15 +1,69 @@
-name: SPBENCH CI
+name: SPBENCH P0.1B CI
 
 on:
   push:
     branches:
-      - exp/spbench-p0.1a
+      - exp/spbench-p0.1b
   pull_request:
     branches:
-      - main
+      - exp/spbench-p0.1a
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
+  repair_source:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout experiment branch
+        uses: actions/checkout@v4
+        with:
+          ref: exp/spbench-p0.1b
+          fetch-depth: 0
+
+      - name: Apply Merlin32-safe ThunkSize pushes
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('iigs/spbench/src/SPBench.s')
+          text = path.read_text(encoding='utf-8')
+          old = '         PushLong #ThunkSize'
+          new = '         pea   $0000\n         pea   ThunkSize'
+          count = text.count(old)
+
+          if count not in (0, 2):
+              raise SystemExit(
+                  f'Expected 0 or 2 PushLong #ThunkSize occurrences; found {count}'
+              )
+
+          if count == 2:
+              path.write_text(
+                  text.replace(old, new),
+                  encoding='utf-8',
+                  newline='\n'
+              )
+              print('Applied two Merlin32-safe ThunkSize replacements.')
+          else:
+              print('Source already repaired; no replacement required.')
+          PY
+
+          if git diff --quiet -- iigs/spbench/src/SPBench.s; then
+            echo 'No source repair commit required.'
+            exit 0
+          fi
+
+          git config user.name 'SPBENCH CI'
+          git config user.email 'actions@users.noreply.github.com'
+          git add iigs/spbench/src/SPBench.s
+          git commit -m 'Fix Merlin32 ThunkSize immediate expansion'
+          git push origin HEAD:exp/spbench-p0.1b
+
   powershell51:
     runs-on: windows-latest
 
@@ -27,7 +81,7 @@ jobs:
 
           $tokens = $null
           $errors = $null
-          $path = (Resolve-Path '.\scripts\Build-SPBench-P01A.ps1').Path
+          $path = (Resolve-Path '.\scripts\Build-SPBench-P01B.ps1').Path
 
           [System.Management.Automation.Language.Parser]::ParseFile(
               $path,
@@ -51,6 +105,32 @@ jobs:
       - name: Checkout experiment
         uses: actions/checkout@v4
 
+      - name: Apply Merlin32-safe ThunkSize pushes for this run
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('iigs/spbench/src/SPBench.s')
+          text = path.read_text(encoding='utf-8')
+          old = '         PushLong #ThunkSize'
+          new = '         pea   $0000\n         pea   ThunkSize'
+          count = text.count(old)
+
+          if count not in (0, 2):
+              raise SystemExit(
+                  f'Expected 0 or 2 PushLong #ThunkSize occurrences; found {count}'
+              )
+
+          if count == 2:
+              path.write_text(
+                  text.replace(old, new),
+                  encoding='utf-8',
+                  newline='\n'
+              )
+          PY
+
       - name: Build Merlin32
         shell: bash
         run: |
@@ -60,7 +140,7 @@ jobs:
             /tmp/merlin32
           make -C /tmp/merlin32/Source
 
-      - name: Assemble SPBENCH P0.1A
+      - name: Assemble SPBENCH P0.1B
         shell: bash
         working-directory: iigs/spbench/src
         run: |
@@ -93,38 +173,39 @@ jobs:
         run: |
           set -euo pipefail
           CP2="dotnet /tmp/CiderPress2/cp2/bin/Release/net10.0/cp2.dll"
-          OUT="$GITHUB_WORKSPACE/build-ci/spbench-p0.1a"
+          OUT="$GITHUB_WORKSPACE/build-ci/spbench-p0.1b"
           mkdir -p "$OUT"
 
           cp iigs/spbench/src/SPBENCH "$OUT/SPBENCH#B30000"
           cp iigs/spbench/src/SPBENCH_Output.txt "$OUT/SPBENCH_Output.txt"
 
           cat > "$OUT/README#040000" <<'EOF'
-          SPBENCH P0.1A - GS/OS DRead baseline
+          SPBENCH P0.1B - direct SmartPort baseline
 
           Mount this image on FujiNet and launch SPBENCH from this volume.
-          The test performs 256 warm-up block reads, then timed 1 MiB and
-          4 MiB sequential runs using one 512-byte GS/OS DRead per call.
+          GS/OS is used only to identify the prefix device. The timed path
+          issues direct extended SmartPort READBLOCK $41 calls, 512 bytes
+          per transaction, with the same runs used by P0.1A.
           EOF
 
-          $CP2 create-disk-image "$OUT/SPBENCH-P0.1A.po" 32mb ProDOS
-          $CP2 rename "$OUT/SPBENCH-P0.1A.po" : SPBENCH
+          $CP2 create-disk-image "$OUT/SPBENCH-P0.1B.po" 32mb ProDOS
+          $CP2 rename "$OUT/SPBENCH-P0.1B.po" : SPBENCH
           $CP2 add --from-naps --strip-paths \
-            "$OUT/SPBENCH-P0.1A.po" "$OUT/SPBENCH#B30000"
+            "$OUT/SPBENCH-P0.1B.po" "$OUT/SPBENCH#B30000"
           $CP2 add --from-naps --strip-paths \
-            "$OUT/SPBENCH-P0.1A.po" "$OUT/README#040000"
+            "$OUT/SPBENCH-P0.1B.po" "$OUT/README#040000"
           $CP2 catalog --depth=max --wide \
-            "$OUT/SPBENCH-P0.1A.po" | tee "$OUT/SPBENCH-P0.1A.catalog.txt"
-          $CP2 test "$OUT/SPBENCH-P0.1A.po"
+            "$OUT/SPBENCH-P0.1B.po" | tee "$OUT/SPBENCH-P0.1B.catalog.txt"
+          $CP2 test "$OUT/SPBENCH-P0.1B.po"
 
           cd "$OUT"
           sha256sum \
             'SPBENCH#B30000' \
-            SPBENCH-P0.1A.po \
+            SPBENCH-P0.1B.po \
             > SHA256SUMS.txt
 
-      - name: Upload deployable SPBENCH P0.1A
+      - name: Upload deployable SPBENCH P0.1B
         uses: actions/upload-artifact@v4
         with:
-          name: spbench-p0.1a-deployable
-          path: build-ci/spbench-p0.1a/
+          name: spbench-p0.1b-deployable
+          path: build-ci/spbench-p0.1b/

@@ -4,38 +4,61 @@ Apple IIgs benchmark client for FujiNet SmartPort / Fast-IWM experiments.
 
 ## P0.1A: GS/OS DRead baseline
 
-P0.1A is the first executable transport benchmark.  It deliberately starts one
+P0.1A is the first executable transport benchmark. It deliberately starts one
 layer above raw SmartPort: GS/OS Device Manager `DRead`, with exactly one
 512-byte block requested per call.
 
-This gives us a low-risk baseline that can be compared with both the existing
-BenchmarkeD results and the later direct-SmartPort benchmark.
+Hardware baseline on the stock 2.8 MHz ROM 3 IIgs:
 
-P0.1A:
+- 1 MiB: 16,530 bytes/sec, 132 kbit/sec
+- 4 MiB: 16,421 bytes/sec, 131 kbit/sec
 
-1. obtains GS/OS prefix 1
-2. identifies the block device that owns that volume
-3. verifies that it is a readable 512-byte ProDOS block device
-4. warms the path with 256 sequential block reads (128 KiB)
-5. times 2048 sequential block reads (1 MiB)
-6. times 8192 sequential block reads (4 MiB)
-7. uses the Misc Tool `_GetTick` 60 Hz counter
-8. reports completed blocks, bytes, elapsed ticks, bytes/sec, and kbit/sec
-9. performs no screen output inside the timed read loop
+The long run is therefore approximately 31.2 ms per 512-byte payload block.
 
-The deployment image is itself a 32 MB ProDOS volume named `SPBENCH`.  Mount it
-on FujiNet and launch `SPBENCH` from that volume so the prefix-to-device lookup
+## P0.1B: direct SmartPort baseline
+
+P0.1B keeps the P0.1A transfer sizes and reporting contract unchanged but moves
+below GS/OS Device Manager for the timed transfers.
+
+Discovery still uses GS/OS to identify the block device that owns prefix 1 and
+to obtain its slot, unit, and size. The timed loop then calls the slot SmartPort
+firmware dispatcher directly with extended READBLOCK command `$41`, one
+512-byte block per transaction.
+
+A small fixed/locked bank-zero thunk establishes the firmware-compatible IIgs
+execution environment and calls the dispatcher. The extended command list and
+512-byte destination buffer remain in the normal S16 application bank.
+
+P0.1B runs:
+
+1. 256 sequential blocks / 128 KiB warm-up
+2. 2048 sequential blocks / 1 MiB timed run
+3. 8192 sequential blocks / 4 MiB timed run
+4. Misc Tool `_GetTick` timing at 60 Hz
+5. no screen output in the timed loop
+6. transfer-count verification after every successful READBLOCK
+
+The P0.1A/P0.1B comparison isolates the overhead removed by bypassing GS/OS
+`DRead` before any Fast-IWM timing changes are made.
+
+## Deployment
+
+The deployment image is a 32 MB ProDOS volume named `SPBENCH`. Mount it on
+FujiNet and launch `SPBENCH` from that volume so prefix-to-device discovery
 selects the FujiNet block device automatically.
 
-## Build
+Test the stock 2.8 MHz ROM 3 IIgs first. The accelerated IIgs is the second
+comparison point after the stock result is captured.
 
-From Windows PowerShell 5.1:
+## Build P0.1B
+
+From Windows PowerShell 5.1 on branch `exp/spbench-p0.1b`:
 
 ```powershell
 cd C:\AppleIIgsDev_02\FujiNet-IIgs-Fast-IWM
 
 powershell -NoProfile -ExecutionPolicy Bypass `
-  -File .\scripts\Build-SPBench-P01A.ps1
+  -File .\scripts\Build-SPBench-P01B.ps1
 ```
 
 The builder uses:
@@ -46,16 +69,15 @@ The builder uses:
 
 It assembles the S16 application, creates a fresh 32 MB ProDOS image, adds the
 NAPS-typed binary, catalogs the image, runs `cp2 test`, writes hashes/build
-metadata, and creates `build\spbench-p0.1a\SPBENCH-P0.1A.zip`.
+metadata, and creates `build\spbench-p0.1b\SPBENCH-P0.1B.zip`.
 
-## Next: P0.1B raw SmartPort
+CI separately verifies Merlin32 assembly, parses the build script with actual
+Windows PowerShell 5.1, builds CiderPress II, creates the deployment image, and
+runs `cp2 test` before producing the deployable artifact.
 
-P0.1B will keep the same transfer sizes and reporting contract but move below
-GS/OS Device Manager to the Apple IIgs SmartPort firmware dispatch path.  That
-A/B comparison separates GS/OS/driver overhead from the actual SmartPort bus
-and firmware cost before any 2 us Fast-IWM changes are made.
+## After P0.1B
 
-After the standard-timing baselines are locked, P1 adds Fast-IWM negotiation
-and repeats the same tests unchanged.  P2 adds reduced-overhead multi-block
-bursts, especially 32 blocks = 16 KiB for direct alignment with the existing
-DOC producer quantum.
+After the standard-timing baselines are locked, P1 adds negotiated Fast-IWM
+2 us timing and repeats the same tests unchanged. P2 then attacks per-block
+overhead with multi-block bursts, especially 32 blocks = 16 KiB for direct
+alignment with the existing DOC producer quantum.
