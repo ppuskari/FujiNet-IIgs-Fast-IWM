@@ -4,6 +4,9 @@ on:
   push:
     branches:
       - exp/spbench-p0.1b2
+  pull_request:
+    branches:
+      - exp/spbench-p0.1b
   workflow_dispatch:
 
 jobs:
@@ -12,7 +15,7 @@ jobs:
     steps:
       - name: Checkout experiment
         uses: actions/checkout@v4
-      - name: Parse builder with Windows PowerShell 5.1
+      - name: Parse P0.1B builder with Windows PowerShell 5.1
         shell: powershell
         run: |
           Write-Host ("Windows PowerShell " + $PSVersionTable.PSVersion)
@@ -23,7 +26,9 @@ jobs:
           $errors = $null
           $path = (Resolve-Path '.\scripts\Build-SPBench-P01B.ps1').Path
           [System.Management.Automation.Language.Parser]::ParseFile(
-              $path, [ref]$tokens, [ref]$errors
+              $path,
+              [ref]$tokens,
+              [ref]$errors
           ) | Out-Null
           if ($errors.Count -ne 0) {
               $errors | ForEach-Object { Write-Host $_.Message }
@@ -89,9 +94,8 @@ jobs:
           SPBENCH P0.1B2 - IIgs SmartPort dispatcher correction
 
           Same raw extended READBLOCK $41 benchmark as P0.1B.
-          The only transport change is forcing the known IIgs slot-5
-          SmartPort entry $C50D.  The screen also prints the byte read
-          from $C5FF for diagnosis.
+          Only transport change: use known IIgs slot-5 SmartPort entry $C50D.
+          The screen also prints the byte read from $C5FF for diagnosis.
           EOF
           $CP2 create-disk-image "$OUT/SPBENCH-P0.1B2.po" 32mb ProDOS
           $CP2 rename "$OUT/SPBENCH-P0.1B2.po" : SPBENCH
