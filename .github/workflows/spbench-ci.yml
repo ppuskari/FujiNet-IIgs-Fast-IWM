@@ -1,0 +1,44 @@
+name: SPBENCH CI
+
+on:
+  push:
+    branches:
+      - exp/spbench-p0.1a
+  workflow_dispatch:
+
+jobs:
+  assemble:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout experiment
+        uses: actions/checkout@v4
+
+      - name: Build Merlin32
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --depth 1 \
+            https://github.com/apple2accumulator/merlin32.git \
+            /tmp/merlin32
+          make -C /tmp/merlin32/Source
+          /tmp/merlin32/Source/merlin32 --help || true
+
+      - name: Assemble SPBENCH P0.1A
+        shell: bash
+        working-directory: iigs/spbench/src
+        run: |
+          set -euo pipefail
+          /tmp/merlin32/Source/merlin32 \
+            -V /tmp/merlin32/Library \
+            spbench.make.s
+          test -f SPBENCH
+          ls -l SPBENCH SPBENCH.L
+
+      - name: Upload assembled binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: spbench-p0.1a
+          path: |
+            iigs/spbench/src/SPBENCH
+            iigs/spbench/src/SPBENCH.L
