@@ -1,18 +1,25 @@
 *
-* SPBENCH P0.1A
+* SPBENCH P0.1B
 *
-* Apple IIgs FujiNet SmartPort baseline benchmark.
+* Apple IIgs FujiNet direct SmartPort benchmark.
 *
-* This first executable intentionally measures the
-* GS/OS Device Manager DRead path, one 512-byte block
-* per call.  It gives us a safe, reproducible baseline
-* before P0.1B moves underneath GS/OS to direct
-* SmartPort firmware calls.
+* P0.1B keeps the P0.1A transfer sizes and GetTick
+* timing, but removes GS/OS DRead from the timed path.
+* It calls the Apple IIgs SmartPort firmware dispatcher
+* directly with extended READBLOCK command $41.
+*
+* The main S16 application remains in native mode.
+* A tiny fixed/locked helper is allocated in bank $00,
+* copied there, and entered with JSL for each SmartPort
+* call.  The helper conditions the IIgs environment for
+* 6502-compatible firmware, issues the JSR dispatcher
+* call, then restores the native environment.
 *
 * Launch this program from the FujiNet-mounted SPBENCH
 * ProDOS image.  It identifies the block device that
-* owns prefix 1, warms it with 256 block reads, then
-* measures 1 MiB and 4 MiB sequential transfers.
+* owns prefix 1, obtains slot/unit information, locates
+* the SmartPort dispatcher, warms with 256 block reads,
+* then measures 1 MiB and 4 MiB sequential transfers.
 *
 * Timed loops contain no screen output and use the
 * 60 Hz Misc Tool GetTick counter.
@@ -37,7 +44,6 @@ GSOS           equ   $E100A8
 GetPrefixCall  equ   $200A
 VolumeCall     equ   $2008
 DInfoCall      equ   $202C
-DReadCall      equ   $202F
 QuitCall       equ   $2029
 
 BlockDeviceBit equ   $0080
@@ -48,6 +54,9 @@ BlockSize      equ   $0200
 ErrShortRead   equ   $FF01
 ErrNoDevice    equ   $FF02
 ErrSmallDevice equ   $FF03
+ErrNoBankZero  equ   $FF04
+ErrNotSmartPort equ  $FF05
+ErrBadBankZero equ   $FF06
 
 WarmStart      equ   $0000
 WarmBlocks     equ   $0100
@@ -58,6 +67,8 @@ Test4Blocks    equ   $2000
 MinBlocks      equ   $3000
 
 TextTool       equ   $000C
+EmulStack      equ   $010100
+RawThunkAttr   equ   $C001
 
 *-------------------------------------------------
 * Entry
@@ -76,6 +87,11 @@ Start
          stz   TextStarted
          stz   IMStarted
          stz   LastError
+         stz   RawHandle
+         stz   RawHandle+2
+         stz   RawCodePtr
+         stz   RawCodePtr+2
+         stz   RawTransferCount
 
          _TLStartUp
          lda   #1
@@ -120,6 +136,20 @@ Start
 
 DeviceReady
          jsr   PrintDeviceInfo
+
+         jsr   PrepareRawSmartPort
+         bcc   RawSmartPortReady
+
+         sta   LastError
+         PushLong #RawSetupErrMsg
+         _WriteCString
+         lda   LastError
+         jsr   WriteHexWord
+         jsr   WriteCRLF
+         brl   WaitAndQuit
+
+RawSmartPortReady
+         jsr   PrintRawInfo
 
 * The 4 MiB test starts at block $1000 and consumes
 * $2000 blocks, so the device must contain at least
@@ -273,10 +303,8 @@ InitTextConsole
 *-------------------------------------------------
 * Locate the GS/OS block device that owns prefix 1.
 *
-* This follows the same DInfo/Volume technique used
-* by BenchmarkeD: reduce prefix 1 to its volume name,
-* enumerate readable block devices, and compare the
-* mounted volume name.
+* GS/OS is used only for discovery.  No DRead call is
+* present in the timed transport path.
 *-------------------------------------------------
 
 FindCurrentBlockDevice
@@ -290,9 +318,6 @@ PrefixReturned
          sep   #$20
          lda   pfxNAMEopen
          beq   PrefixBad8
-
-* Remove the final colon, then stop at the next colon
-* after the leading volume-name colon.
 
          dec   pfxNAMEopen
          ldx   #1
@@ -351,8 +376,6 @@ DeviceInfoReturned
          cmp   #BlockSize
          bne   NextDevice
 
-* Compare the two class-one strings byte-for-byte.
-
          sep   #$20
          lda   pfxNAMEopen
          cmp   volNAMEopen
@@ -371,8 +394,14 @@ VolumeCompareLoop
          cpx   pfxNAMEopen
          bne   VolumeCompareLoop
 
-         lda   proDINFO+2
-         sta   proDREAD+2
+* Device found.  Preserve the SmartPort unit byte in
+* the extended command list.
+
+         sep   #$20
+         lda   proDINFO+$10
+         sta   RawCmdUnit
+         rep   #$20
+
          clc
          rts
 
@@ -386,7 +415,165 @@ DeviceNotFound
          rts
 
 *-------------------------------------------------
-* Print selected device information.
+* Locate and prepare direct SmartPort firmware.
+*-------------------------------------------------
+
+PrepareRawSmartPort
+* X = slot * $100 for long indexed reads of $Cnxx.
+
+         lda   proDINFO+$0E
+         and   #$00FF
+         xba
+         tax
+         sta   SlotPageOffset
+
+* Verify the standard ProDOS/SmartPort signature:
+* Cn01=$20, Cn03=$00, Cn05=$03, Cn07=$00.
+
+         sep   #$20
+
+         lda   >$00C001,x
+         cmp   #$20
+         bne   NotSmartPort8
+
+         lda   >$00C003,x
+         cmp   #$00
+         bne   NotSmartPort8
+
+         lda   >$00C005,x
+         cmp   #$03
+         bne   NotSmartPort8
+
+         lda   >$00C007,x
+         cmp   #$00
+         bne   NotSmartPort8
+
+* CnFF is the offset to the ProDOS block entry.
+* SmartPort dispatcher = $Cn00 + CnFF + 3.
+
+         lda   >$00C0FF,x
+         sta   DispatchOffset
+         rep   #$20
+
+         lda   SlotPageOffset
+         clc
+         adc   #$C003
+         sta   DispatchAddress
+
+         lda   DispatchOffset
+         and   #$00FF
+         clc
+         adc   DispatchAddress
+         sta   DispatchAddress
+
+         jsr   AllocateRawThunk
+         bcs   RawPrepareFail
+
+* Patch only the JSR target in the source image.
+* The extended command list uses a four-byte pointer,
+* so its compiled address remains valid after the
+* helper itself is copied to bank $00.
+
+         lda   DispatchAddress
+         sta   ThunkDispatch+1
+
+         PushLong #ThunkTemplate
+         PushLong RawCodePtr
+         PushLong #ThunkSize
+         _BlockMove
+
+* Patch the application's long call to the allocated
+* bank-zero helper.
+
+         lda   RawCodePtr
+         sta   RawSmartPortCall+1
+
+         sep   #$20
+         lda   RawCodePtr+2
+         sta   RawSmartPortCall+3
+         rep   #$20
+
+         clc
+         rts
+
+NotSmartPort8
+         rep   #$20
+         lda   #ErrNotSmartPort
+         sec
+         rts
+
+RawPrepareFail
+         sec
+         rts
+
+*-------------------------------------------------
+* Allocate tiny fixed/locked bank-zero helper.
+*
+* The stack dereference pattern is the standard IIgs
+* technique for obtaining both a handle and its data
+* pointer after NewHandle.
+*-------------------------------------------------
+
+AllocateRawThunk
+         pha
+         pha
+         PushLong #ThunkSize
+         PushWord MyID
+         PushWord #RawThunkAttr
+         PushLong #0
+         _NewHandle
+         bcc   RawHandleAllocated
+
+         pla
+         pla
+         lda   #ErrNoBankZero
+         sec
+         rts
+
+RawHandleAllocated
+         phd
+         tsc
+         tcd
+
+         lda   [3]
+         sta   RawCodePtr
+
+         ldy   #2
+         lda   [3],y
+         sta   RawCodePtr+2
+
+         pld
+
+         ply
+         sty   RawHandle
+         plx
+         stx   RawHandle+2
+
+* C001 + location zero requests bank $00.  Refuse to
+* execute the helper if Memory Manager returned any
+* other bank.
+
+         lda   RawCodePtr+2
+         and   #$00FF
+         beq   RawHandleGood
+
+         PushLong RawHandle
+         _DisposeHandle
+         stz   RawHandle
+         stz   RawHandle+2
+         stz   RawCodePtr
+         stz   RawCodePtr+2
+
+         lda   #ErrBadBankZero
+         sec
+         rts
+
+RawHandleGood
+         clc
+         rts
+
+*-------------------------------------------------
+* Print selected device and raw firmware information.
 *-------------------------------------------------
 
 PrintDeviceInfo
@@ -413,25 +600,42 @@ PrintDeviceInfo
          sta   MetricValue+2
          jsr   PrintMetricDecimal
          jsr   WriteCRLF
+         rts
+
+PrintRawInfo
+         PushLong #DispatchMsg
+         _WriteCString
+         lda   DispatchAddress
+         jsr   WriteHexWord
+
+         PushLong #ThunkMsg
+         _WriteCString
+         lda   RawCodePtr+2
+         jsr   WriteHexWord
+         lda   RawCodePtr
+         jsr   WriteHexWord
+
+         PushLong #RawModeMsg
+         _WriteCString
+         jsr   WriteCRLF
          jsr   WriteCRLF
          rts
 
 *-------------------------------------------------
-* Run one timed sequential DRead test.
+* Run one timed sequential direct SmartPort test.
 *
 * TestStartBlock = 32-bit starting block
-* TestBlockCount = 16-bit number of 512-byte reads
+* TestBlockCount = number of 512-byte reads
 *
-* Returns C=0 on success.
-* Returns C=1 with LastError set on GS/OS error or
-* a short transfer.
+* The timed loop issues no GS/OS calls and performs
+* no screen output.
 *-------------------------------------------------
 
 RunTimedReadTest
          lda   TestStartBlock
-         sta   proDREAD+$0C
+         sta   CurrentBlock
          lda   TestStartBlock+2
-         sta   proDREAD+$0E
+         sta   CurrentBlock+2
 
          lda   TestBlockCount
          sta   RemainingBlocks
@@ -444,49 +648,51 @@ RunTimedReadTest
          lda   CurrentTick+2
          sta   StartTick+2
 
-ReadTestLoop
-         stz   proDREAD+$12
-         stz   proDREAD+$14
+RawReadLoop
+         lda   CurrentBlock
+         sta   RawCmdBlock
+         lda   CurrentBlock+2
+         sta   RawCmdBlock+2
 
-         jsl   GSOS
-         dw    DReadCall
-         adrl  proDREAD
-         bcc   DReadReturned
+RawSmartPortCall
+         jsl   $000000
+         bcc   RawReadReturned
 
          sta   LastError
          jsr   FinishTiming
          sec
          rts
 
-DReadReturned
-         lda   proDREAD+$12
+RawReadReturned
+* SmartPort ReadBlock reports bytes transferred in X/Y.
+* The bank-zero helper records them as a 16-bit count.
+
+         lda   RawTransferCount
          cmp   #BlockSize
-         bne   ShortTransfer
-         lda   proDREAD+$14
-         bne   ShortTransfer
+         beq   RawTransferComplete
 
-         inc   SuccessfulBlocks
-
-         lda   proDREAD+$0C
-         clc
-         adc   #1
-         sta   proDREAD+$0C
-         lda   proDREAD+$0E
-         adc   #0
-         sta   proDREAD+$0E
-
-         dec   RemainingBlocks
-         bne   ReadTestLoop
-
-         jsr   FinishTiming
-         clc
-         rts
-
-ShortTransfer
          lda   #ErrShortRead
          sta   LastError
          jsr   FinishTiming
          sec
+         rts
+
+RawTransferComplete
+         inc   SuccessfulBlocks
+
+         lda   CurrentBlock
+         clc
+         adc   #1
+         sta   CurrentBlock
+         lda   CurrentBlock+2
+         adc   #0
+         sta   CurrentBlock+2
+
+         dec   RemainingBlocks
+         bne   RawReadLoop
+
+         jsr   FinishTiming
+         clc
          rts
 
 FinishTiming
@@ -721,6 +927,19 @@ WriteHexOutput
 *-------------------------------------------------
 
 ShutTools
+         lda   RawHandle
+         ora   RawHandle+2
+         beq   RawAlreadyDisposed
+
+         PushLong RawHandle
+         _DisposeHandle
+
+         stz   RawHandle
+         stz   RawHandle+2
+         stz   RawCodePtr
+         stz   RawCodePtr+2
+
+RawAlreadyDisposed
          lda   IMStarted
          beq   IMAlreadyStopped
          _IMShutDown
@@ -756,6 +975,141 @@ TLAlreadyStopped
          rts
 
 *-------------------------------------------------
+* Bank-zero SmartPort helper image.
+*
+* This routine is copied to Memory Manager-owned bank
+* $00 RAM.  The caller enters it with JSL, giving PBR
+* $00.  It preserves caller P/D/DBR and native S.
+*
+* The SmartPort firmware requires:
+*   decimal off
+*   emulation mode
+*   D=$0000
+*   DBR=$00
+*   PBR=$00
+*   S=$01xx
+*
+* The extended command form places a four-byte pointer
+* to RawCmdList inline after command $41, allowing the
+* command list and 512-byte target buffer to remain in
+* the normal S16 application bank.
+*-------------------------------------------------
+
+ThunkTemplate
+         php
+         phd
+         phb
+         rep   #$30
+
+* Save native stack pointer in X.  If it is not already
+* in page $01, switch temporarily to the system's saved
+* emulation stack pointer.
+
+         tsc
+         tax
+         and   #$FF00
+         cmp   #$0100
+         beq   ThunkStackReady
+
+         sep   #$20
+         lda   >EmulStack
+         rep   #$20
+         and   #$00FF
+         ora   #$0100
+         tcs
+
+ThunkStackReady
+         phx
+
+* Establish 6502-compatible D and DBR while still in
+* native mode, then enter emulation mode.
+
+         lda   #$0000
+         tcd
+         phk
+         plb
+
+         sec
+         xce
+         cld
+
+ThunkDispatch
+         jsr   $FFFF
+         db    $41
+         adrl  RawCmdList
+
+         bcc   ThunkSuccess
+         tay
+         bra   ThunkResultReady
+
+ThunkSuccess
+* ReadBlock returns the transferred byte count in X/Y.
+* In emulation mode X is the low byte and Y is the high
+* byte.  Save both directly into the application bank.
+
+         txa
+         sta   >RawTransferCount
+         tya
+         sta   >RawTransferCount+1
+         ldy   #$00
+
+ThunkResultReady
+* Return to native mode.  XCE exchanges E into carry,
+* so the SmartPort result has already been captured in
+* Y before this point.
+
+         clc
+         xce
+         rep   #$30
+
+* Recover native S, then update the system emulation
+* stack byte before leaving page $01.
+
+         plx
+         tsc
+         sep   #$20
+         sta   >EmulStack
+         rep   #$20
+
+         txa
+         tcs
+
+         plb
+         pld
+         plp
+
+* Return A=0/C=0 for success or A=SmartPort error/C=1.
+
+         tya
+         and   #$00FF
+         beq   ThunkReturnOK
+
+         sec
+         rtl
+
+ThunkReturnOK
+         clc
+         rtl
+
+ThunkEnd
+ThunkSize      equ   ThunkEnd-ThunkTemplate
+
+*-------------------------------------------------
+* SmartPort extended READBLOCK parameter list.
+*
+* count=3, unit byte, 4-byte buffer pointer,
+* 4-byte block number.
+*-------------------------------------------------
+
+RawCmdList
+         db    $03
+RawCmdUnit
+         db    $00
+         adrl  ReadBuffer
+RawCmdBlock
+         adrl  $00000000
+
+*-------------------------------------------------
 * GS/OS parameter blocks
 *-------------------------------------------------
 
@@ -777,15 +1131,6 @@ proDINFO
          ds    2
          ds    2
          ds    2
-
-proDREAD
-         dw    6
-         ds    2
-         adrl  ReadBuffer
-         adrl  $00000200
-         ds    4
-         dw    512
-         ds    4
 
 proVOLUME
          dw    6
@@ -840,7 +1185,15 @@ IMStarted      ds    2
 AppID          ds    2
 MyID           ds    2
 
+RawHandle      ds    4
+RawCodePtr     ds    4
+SlotPageOffset ds    2
+DispatchOffset ds    2
+DispatchAddress ds   2
+RawTransferCount ds 2
+
 TestStartBlock ds    4
+CurrentBlock   ds    4
 TestBlockCount ds    2
 TestNumerator  ds    4
 RemainingBlocks ds  2
@@ -867,8 +1220,8 @@ ReadBuffer     ds    512
 *-------------------------------------------------
 
 BannerMsg
-         asc   'SPBENCH P0.1A - GS/OS DRead baseline'0d
-         asc   'FujiNet/SmartPort 512-byte sequential reads'0d
+         asc   'SPBENCH P0.1B - direct SmartPort baseline'0d
+         asc   'Raw extended READBLOCK $41, 512 bytes/call'0d
          asc   'Timing source: Misc Tool GetTick, 60 Hz'0d0d00
 
 DeviceMsg
@@ -879,6 +1232,13 @@ UnitMsg
          asc   '  Unit=$'00
 BlocksMsg
          asc   '  Blocks='00
+
+DispatchMsg
+         asc   'SmartPort dispatch=$'00
+ThunkMsg
+         asc   '  bank0 thunk=$'00
+RawModeMsg
+         asc   '  mode=EXT $41'00
 
 WarmupMsg
          asc   'Warm-up: 256 blocks / 128 KiB ... '00
@@ -905,15 +1265,17 @@ FindDeviceErrMsg
          asc   'Unable to identify prefix block device. error=$'00
 SmallDeviceMsg
          asc   'Device is smaller than required test range. error=$'00
+RawSetupErrMsg
+         asc   'Direct SmartPort setup failed. error=$'00
 ReadFailureMsg
-         asc   'DRead failed. error=$'00
+         asc   'SmartPort READBLOCK failed. error=$'00
 FailureBlocksMsg
          asc   '  completed blocks='00
 FailureTicksMsg
          asc   '  elapsed ticks='00
 
 AllDoneMsg
-         asc   'Baseline run complete.'0d00
+         asc   'Direct SmartPort baseline complete.'0d00
 ExitMsg
          asc   'Press any key to return to GS/OS.'0d00
 CRLFMsg
