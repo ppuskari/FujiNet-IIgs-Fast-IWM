@@ -23,21 +23,27 @@ def main() -> None:
 
     root = Path(args.firmware_root).resolve()
     hdr = root / 'lib' / 'bus' / 'iwm' / 'iwm_ll.h'
-    cpp = root / 'lib' / 'bus' / 'iwm' / 'iwm_ll.cpp'
+    llcpp = root / 'lib' / 'bus' / 'iwm' / 'iwm_ll.cpp'
+    buscpp = root / 'lib' / 'bus' / 'iwm' / 'iwm.cpp'
 
-    if not hdr.is_file() or not cpp.is_file():
+    if not hdr.is_file() or not llcpp.is_file() or not buscpp.is_file():
         raise SystemExit(f'FujiNet IWM sources not found under {root}')
 
     htext = hdr.read_text(encoding='utf-8')
-    ctext = cpp.read_text(encoding='utf-8')
+    ltext = llcpp.read_text(encoding='utf-8')
+    btext = buscpp.read_text(encoding='utf-8')
 
-    if 'iwm_send_fast_probe_spi' in htext and 'fast_iwm_probe_armed' in ctext:
+    if (
+        'iwm_send_fast_probe_spi' in htext
+        and 'fast_iwm_probe_request' in ltext
+        and 'fast_iwm_probe_request' in btext
+    ):
         print('FujiNet Fast-IWM P0.2B patch already applied.')
         return
 
     # --------------------------------------------------------------
     # Header: add a second TX device handle at 2 MHz and one private
-    # probe-send entry point.  The normal 1 MHz SmartPort handle stays
+    # probe-send entry point. The normal 1 MHz SmartPort handle stays
     # untouched, so ordinary FujiNet remains 4-us compatible.
     # --------------------------------------------------------------
     htext = replace_once(
@@ -61,16 +67,19 @@ def main() -> None:
     )
 
     # --------------------------------------------------------------
-    # CPP state and phase ISR.
-    # 1110 is the private arm signature; PH0 is still the physical
-    # SmartPort REQ line, so 1111 becomes the request edge.
+    # Low-level state and phase ISR.
+    #
+    # IMPORTANT: the GPIO ISR only records the private request and
+    # manipulates the lightweight ACK GPIO. The blocking ESP-IDF SPI
+    # transmit is deliberately deferred to systemBus::service().
     # --------------------------------------------------------------
-    ctext = replace_once(
-        ctext,
+    ltext = replace_once(
+        ltext,
         'volatile int isrctr = 0;\n',
         'volatile int isrctr = 0;\n'
         '#ifdef IIGS_FAST_IWM_PROBE\n'
         'volatile bool fast_iwm_probe_armed = false;\n'
+        'volatile bool fast_iwm_probe_request = false;\n'
         '#endif\n',
         'global ISR state'
     )
@@ -82,12 +91,13 @@ def main() -> None:
   // Private IIgs Fast-IWM P0.2B probe.
   //
   // PH3..PH0 = 1110 arms the responder and asserts ACK low.
-  // Raising PH0 (REQ) produces 1111 and transmits a deterministic
-  // test stream through a dedicated 2-MHz SPI device handle.
-  // Ordinary SmartPort still uses the original 1-MHz TX handle.
+  // Raising PH0 (REQ) produces 1111 and queues one deterministic
+  // 2-us transmit request. The actual SPI transfer is NOT performed
+  // inside this GPIO ISR; systemBus::service() performs it.
   if (_phases == 0b1110)
   {
     fast_iwm_probe_armed = true;
+    fast_iwm_probe_request = false;
     smartport.iwm_ack_clr();
     return;
   }
@@ -95,9 +105,7 @@ def main() -> None:
   if (fast_iwm_probe_armed && (_phases == 0b1111))
   {
     fast_iwm_probe_armed = false;
-    smartport.iwm_ack_set();
-    smartport.iwm_send_fast_probe_spi();
-    smartport.iwm_ack_clr();
+    fast_iwm_probe_request = true;
     return;
   }
 
@@ -106,17 +114,21 @@ def main() -> None:
   if (_phases == 0b0101)
   {
     fast_iwm_probe_armed = false;
+    fast_iwm_probe_request = false;
     smartport.iwm_ack_set();
   }
 #endif
 
 '''
-    ctext = replace_once(ctext, isr_anchor, isr_block, 'phi ISR anchor')
+    ltext = replace_once(ltext, isr_anchor, isr_block, 'phi ISR anchor')
 
     # --------------------------------------------------------------
-    # Private deterministic TX routine.  The existing encoder turns
-    # each logical IWM bit into two SPI bits.  Sending that same encoded
-    # waveform at 2 MHz halves the cell period from 4 us to 2 us.
+    # Private deterministic TX routine.
+    #
+    # The existing encoder turns each logical IWM bit into two SPI bits.
+    # Sending the same encoded waveform at 2 MHz halves the nominal cell
+    # period from 4 us to 2 us. This runs in normal service context, not
+    # the GPIO ISR.
     # --------------------------------------------------------------
     method_anchor = '#define IWM_NEXT_BIT()'
     fast_method = r'''#ifdef IIGS_FAST_IWM_PROBE
@@ -152,9 +164,13 @@ error_is_true IRAM_ATTR iwm_sp_ll::iwm_send_fast_probe_spi()
   trans.tx_buffer = spi_buffer;
   trans.length = spi_len * 8;
 
+  // Mirror the timing discipline of the normal SmartPort transmitter:
+  // no unrelated interrupt jitter while the physical packet is on wire.
+  portDISABLE_INTERRUPTS();
   enable_output();
   esp_err_t ret = spi_device_polling_transmit(spifast, &trans);
   disable_output();
+  portENABLE_INTERRUPTS();
 
   if (ret != ESP_OK)
     RETURN_ERROR_AS_TRUE();
@@ -164,13 +180,13 @@ error_is_true IRAM_ATTR iwm_sp_ll::iwm_send_fast_probe_spi()
 #endif
 
 '''
-    if method_anchor not in ctext:
+    if method_anchor not in ltext:
         raise SystemExit('Expected IWM_NEXT_BIT anchor not found.')
-    ctext = ctext.replace(method_anchor, fast_method + method_anchor, 1)
+    ltext = ltext.replace(method_anchor, fast_method + method_anchor, 1)
 
     # --------------------------------------------------------------
     # setup_spi: add a second device on whichever TX bus normal
-    # SmartPort uses.  No CS line is involved, just as with normal TX.
+    # SmartPort uses. No CS line is involved, just as with normal TX.
     # --------------------------------------------------------------
     setup_anchor = '''  if (smartport.spiMutex == NULL)
   {
@@ -200,28 +216,78 @@ error_is_true IRAM_ATTR iwm_sp_ll::iwm_send_fast_probe_spi()
     smartport.spiMutex = xSemaphoreCreateMutex();
   }
 '''
-    ctext = replace_once(ctext, setup_anchor, setup_insert, 'setup_spi mutex anchor')
+    ltext = replace_once(ltext, setup_anchor, setup_insert, 'setup_spi mutex anchor')
+
+    # --------------------------------------------------------------
+    # Normal system service context: service one queued private packet
+    # before ordinary SmartPort/DiskII work. This is intentionally a
+    # one-request latch; the IIgs drops PH0 back to 1110 to re-arm.
+    # --------------------------------------------------------------
+    include_anchor = '#include "compat_esp.h" // empty IRAM_ATTR macro for FujiNet-PC\n'
+    include_insert = '''#include "compat_esp.h" // empty IRAM_ATTR macro for FujiNet-PC
+
+#ifdef IIGS_FAST_IWM_PROBE
+extern volatile bool fast_iwm_probe_request;
+#endif
+'''
+    btext = replace_once(btext, include_anchor, include_insert, 'iwm.cpp include anchor')
+
+    service_anchor = '''void IRAM_ATTR systemBus::service()
+{
+#ifndef DEV_RELAY_SLIP
+'''
+    service_insert = '''void IRAM_ATTR systemBus::service()
+{
+#ifdef IIGS_FAST_IWM_PROBE
+  // The GPIO phase ISR only latches this request. Perform the blocking
+  // SPI transfer here in normal bus-service context.
+  if (fast_iwm_probe_request)
+  {
+    fast_iwm_probe_request = false;
+    smartport.iwm_ack_set();
+    smartport.iwm_send_fast_probe_spi();
+    smartport.iwm_ack_clr();
+    return;
+  }
+#endif
+
+#ifndef DEV_RELAY_SLIP
+'''
+    btext = replace_once(btext, service_anchor, service_insert, 'systemBus::service anchor')
 
     # Final sanity checks.
     required = [
         'IIGS_FAST_IWM_PROBE',
         'spifast',
         'fast_iwm_probe_armed',
+        'fast_iwm_probe_request',
         'iwm_send_fast_probe_spi',
         '0b1110',
         '0b1111',
         'fastcfg.clock_speed_hz = 2 * MHZ',
+        'if (fast_iwm_probe_request)',
     ]
-    joined = htext + '\n' + ctext
+    joined = htext + '\n' + ltext + '\n' + btext
     for item in required:
         if item not in joined:
             raise SystemExit(f'Missing required Fast-IWM marker: {item}')
 
-    hdr.write_text(htext, encoding='utf-8', newline='\n')
-    cpp.write_text(ctext, encoding='utf-8', newline='\n')
+    # Safety assertion: no blocking fast SPI call may remain in the
+    # private phase-ISR branch.
+    isr_start = ltext.index('void IRAM_ATTR phi_isr_handler')
+    isr_end = ltext.index('inline void iwm_ll::iwm_extra_set', isr_start)
+    isr_text = ltext[isr_start:isr_end]
+    if 'iwm_send_fast_probe_spi()' in isr_text:
+        raise SystemExit('Unsafe P0.2B patch: fast SPI transmit still appears in GPIO ISR.')
 
-    print('Applied FujiNet Fast-IWM P0.2B private 2-us responder patch.')
+    hdr.write_text(htext, encoding='utf-8', newline='\n')
+    llcpp.write_text(ltext, encoding='utf-8', newline='\n')
+    buscpp.write_text(btext, encoding='utf-8', newline='\n')
+
+    print('Applied FujiNet Fast-IWM P0.2B production-safe responder patch.')
     print(f'Firmware root: {root}')
+    print('Normal SmartPort remains 1 MHz; private responder TX is 2 MHz.')
+    print('Fast SPI transmit runs in systemBus::service(), not the GPIO ISR.')
     print('Build with -D IIGS_FAST_IWM_PROBE.')
 
 
