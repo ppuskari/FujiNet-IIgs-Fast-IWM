@@ -4,6 +4,9 @@ on:
   push:
     branches:
       - exp/spbench-p0.1a
+  pull_request:
+    branches:
+      - main
   workflow_dispatch:
 
 jobs:
@@ -22,7 +25,6 @@ jobs:
             https://github.com/apple2accumulator/merlin32.git \
             /tmp/merlin32
           make -C /tmp/merlin32/Source
-          /tmp/merlin32/Source/merlin32 --help || true
 
       - name: Assemble SPBENCH P0.1A
         shell: bash
