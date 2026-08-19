@@ -19,6 +19,7 @@
          use   4/Mem.Macs
          use   4/Misc.Macs
          use   4/Text.Macs
+         use   4/Util.Macs
 
          mx    %00
 
