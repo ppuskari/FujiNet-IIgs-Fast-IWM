@@ -53,9 +53,11 @@ jobs:
         run: |
           set -euo pipefail
           python3 tools/patch_spbench_p01b3_v2.py
+          python3 tools/fix_spbench_p01b3_branches.py
           grep -q 'SPBENCH P0.1B3' iigs/spbench/src/SPBench.s
           grep -q 'InitTextConsole' iigs/spbench/src/SPBench.s
           grep -q 'RawStageBuffer' iigs/spbench/src/SPBench.s
+          grep -q 'brl   NotSmartPort8' iigs/spbench/src/SPBench.s
           if grep -q 'db    $41' iigs/spbench/src/SPBench.s; then
             echo 'Extended $41 call residue remains'
             exit 1
