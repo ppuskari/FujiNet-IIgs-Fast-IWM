@@ -1,0 +1,20 @@
+{
+  "project": "FujiNet-IIgs-Fast-IWM",
+  "created": "2026-08-19",
+  "phase": "E0-scaffold",
+  "fujinet_upstream": "FujiNetWIFI/fujinet-firmware",
+  "fujinet_baseline_commit": "b0a9483463c93ab61279d265467159c0d27c9f82",
+  "first_experiment": "E1-standard-smartport-baseline",
+  "targets": [
+    "ROM3 stock 2.8MHz",
+    "accelerated IIgs approximately 14MHz"
+  ],
+  "audio_reference": {
+    "sample_rate_hz": 22050,
+    "mono_bytes_per_second": 22050,
+    "stereo_bytes_per_second": 44100,
+    "system_ring_bytes": 524288,
+    "producer_quantum_bytes": 16384,
+    "protection_gate_bytes": 49152
+  }
+}

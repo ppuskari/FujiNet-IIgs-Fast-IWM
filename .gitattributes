@@ -1,0 +1,14 @@
+# Keep source and experiment metadata stable across Windows/Linux hosts.
+* text=auto eol=lf
+
+# Binary artifacts, if intentionally added later, must not be normalized.
+*.po  binary
+*.2mg binary
+*.dsk binary
+*.bin binary
+*.zip binary
+*.7z  binary
+*.png binary
+*.jpg binary
+*.gif binary
+*.wav binary
