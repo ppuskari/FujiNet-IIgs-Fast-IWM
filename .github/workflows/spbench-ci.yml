@@ -10,6 +10,40 @@ on:
   workflow_dispatch:
 
 jobs:
+  powershell51:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout experiment
+        uses: actions/checkout@v4
+
+      - name: Parse builder with Windows PowerShell 5.1
+        shell: powershell
+        run: |
+          Write-Host ("Windows PowerShell " + $PSVersionTable.PSVersion)
+          if ($PSVersionTable.PSVersion.Major -ne 5) {
+              throw "Expected Windows PowerShell 5.x"
+          }
+
+          $tokens = $null
+          $errors = $null
+          $path = (Resolve-Path '.\scripts\Build-SPBench-P01A.ps1').Path
+
+          [System.Management.Automation.Language.Parser]::ParseFile(
+              $path,
+              [ref]$tokens,
+              [ref]$errors
+          ) | Out-Null
+
+          if ($errors.Count -ne 0) {
+              $errors | ForEach-Object {
+                  Write-Host $_.Message
+              }
+              throw "PowerShell 5.1 parse failed"
+          }
+
+          Write-Host "PowerShell 5.1 parse passed."
+
   assemble:
     runs-on: ubuntu-latest
 
