@@ -16,10 +16,14 @@ if ([string]::IsNullOrWhiteSpace($thisScript)) {
 $scriptRoot = Split-Path -Parent $thisScript
 $repoRoot = Split-Path -Parent $scriptRoot
 $patchScript = Join-Path $repoRoot 'tools\patch_spbench_p01b3_v2.py'
+$branchFixScript = Join-Path $repoRoot 'tools\fix_spbench_p01b3_branches.py'
 $baseBuilder = Join-Path $scriptRoot 'Build-SPBench-P01B.ps1'
 
 if (-not (Test-Path -LiteralPath $patchScript -PathType Leaf)) {
     throw ('Missing P0.1B3 patch script: ' + $patchScript)
+}
+if (-not (Test-Path -LiteralPath $branchFixScript -PathType Leaf)) {
+    throw ('Missing P0.1B3 branch fix script: ' + $branchFixScript)
 }
 if (-not (Test-Path -LiteralPath $baseBuilder -PathType Leaf)) {
     throw ('Missing P0.1B builder: ' + $baseBuilder)
@@ -43,13 +47,18 @@ Push-Location $repoRoot
 try {
     & $pythonCommand.Source $patchScript
     $patchExit = $LASTEXITCODE
+    if ($patchExit -ne 0) {
+        throw ('P0.1B3 source patch failed with exit code ' + $patchExit)
+    }
+
+    & $pythonCommand.Source $branchFixScript
+    $branchExit = $LASTEXITCODE
+    if ($branchExit -ne 0) {
+        throw ('P0.1B3 branch fix failed with exit code ' + $branchExit)
+    }
 }
 finally {
     Pop-Location
-}
-
-if ($patchExit -ne 0) {
-    throw ('P0.1B3 source patch failed with exit code ' + $patchExit)
 }
 
 Write-Host ''
