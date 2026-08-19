@@ -1,12 +1,12 @@
-name: SPBENCH CI
+name: SPBENCH P0.1B CI
 
 on:
   push:
     branches:
-      - exp/spbench-p0.1a
+      - exp/spbench-p0.1b
   pull_request:
     branches:
-      - main
+      - exp/spbench-p0.1a
   workflow_dispatch:
 
 jobs:
@@ -27,7 +27,7 @@ jobs:
 
           $tokens = $null
           $errors = $null
-          $path = (Resolve-Path '.\scripts\Build-SPBench-P01A.ps1').Path
+          $path = (Resolve-Path '.\scripts\Build-SPBench-P01B.ps1').Path
 
           [System.Management.Automation.Language.Parser]::ParseFile(
               $path,
@@ -60,7 +60,7 @@ jobs:
             /tmp/merlin32
           make -C /tmp/merlin32/Source
 
-      - name: Assemble SPBENCH P0.1A
+      - name: Assemble SPBENCH P0.1B
         shell: bash
         working-directory: iigs/spbench/src
         run: |
@@ -93,38 +93,39 @@ jobs:
         run: |
           set -euo pipefail
           CP2="dotnet /tmp/CiderPress2/cp2/bin/Release/net10.0/cp2.dll"
-          OUT="$GITHUB_WORKSPACE/build-ci/spbench-p0.1a"
+          OUT="$GITHUB_WORKSPACE/build-ci/spbench-p0.1b"
           mkdir -p "$OUT"
 
           cp iigs/spbench/src/SPBENCH "$OUT/SPBENCH#B30000"
           cp iigs/spbench/src/SPBENCH_Output.txt "$OUT/SPBENCH_Output.txt"
 
           cat > "$OUT/README#040000" <<'EOF'
-          SPBENCH P0.1A - GS/OS DRead baseline
+          SPBENCH P0.1B - direct SmartPort baseline
 
           Mount this image on FujiNet and launch SPBENCH from this volume.
-          The test performs 256 warm-up block reads, then timed 1 MiB and
-          4 MiB sequential runs using one 512-byte GS/OS DRead per call.
+          GS/OS is used only to identify the prefix device. The timed path
+          issues direct extended SmartPort READBLOCK $41 calls, 512 bytes
+          per transaction, with the same runs used by P0.1A.
           EOF
 
-          $CP2 create-disk-image "$OUT/SPBENCH-P0.1A.po" 32mb ProDOS
-          $CP2 rename "$OUT/SPBENCH-P0.1A.po" : SPBENCH
+          $CP2 create-disk-image "$OUT/SPBENCH-P0.1B.po" 32mb ProDOS
+          $CP2 rename "$OUT/SPBENCH-P0.1B.po" : SPBENCH
           $CP2 add --from-naps --strip-paths \
-            "$OUT/SPBENCH-P0.1A.po" "$OUT/SPBENCH#B30000"
+            "$OUT/SPBENCH-P0.1B.po" "$OUT/SPBENCH#B30000"
           $CP2 add --from-naps --strip-paths \
-            "$OUT/SPBENCH-P0.1A.po" "$OUT/README#040000"
+            "$OUT/SPBENCH-P0.1B.po" "$OUT/README#040000"
           $CP2 catalog --depth=max --wide \
-            "$OUT/SPBENCH-P0.1A.po" | tee "$OUT/SPBENCH-P0.1A.catalog.txt"
-          $CP2 test "$OUT/SPBENCH-P0.1A.po"
+            "$OUT/SPBENCH-P0.1B.po" | tee "$OUT/SPBENCH-P0.1B.catalog.txt"
+          $CP2 test "$OUT/SPBENCH-P0.1B.po"
 
           cd "$OUT"
           sha256sum \
             'SPBENCH#B30000' \
-            SPBENCH-P0.1A.po \
+            SPBENCH-P0.1B.po \
             > SHA256SUMS.txt
 
-      - name: Upload deployable SPBENCH P0.1A
+      - name: Upload deployable SPBENCH P0.1B
         uses: actions/upload-artifact@v4
         with:
-          name: spbench-p0.1a-deployable
-          path: build-ci/spbench-p0.1a/
+          name: spbench-p0.1b-deployable
+          path: build-ci/spbench-p0.1b/
