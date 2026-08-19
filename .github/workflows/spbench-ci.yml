@@ -9,7 +9,61 @@ on:
       - exp/spbench-p0.1a
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
+  repair_source:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout experiment branch
+        uses: actions/checkout@v4
+        with:
+          ref: exp/spbench-p0.1b
+          fetch-depth: 0
+
+      - name: Apply Merlin32-safe ThunkSize pushes
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('iigs/spbench/src/SPBench.s')
+          text = path.read_text(encoding='utf-8')
+          old = '         PushLong #ThunkSize'
+          new = '         pea   $0000\n         pea   ThunkSize'
+          count = text.count(old)
+
+          if count not in (0, 2):
+              raise SystemExit(
+                  f'Expected 0 or 2 PushLong #ThunkSize occurrences; found {count}'
+              )
+
+          if count == 2:
+              path.write_text(
+                  text.replace(old, new),
+                  encoding='utf-8',
+                  newline='\n'
+              )
+              print('Applied two Merlin32-safe ThunkSize replacements.')
+          else:
+              print('Source already repaired; no replacement required.')
+          PY
+
+          if git diff --quiet -- iigs/spbench/src/SPBench.s; then
+            echo 'No source repair commit required.'
+            exit 0
+          fi
+
+          git config user.name 'SPBENCH CI'
+          git config user.email 'actions@users.noreply.github.com'
+          git add iigs/spbench/src/SPBench.s
+          git commit -m 'Fix Merlin32 ThunkSize immediate expansion'
+          git push origin HEAD:exp/spbench-p0.1b
+
   powershell51:
     runs-on: windows-latest
 
@@ -50,6 +104,32 @@ jobs:
     steps:
       - name: Checkout experiment
         uses: actions/checkout@v4
+
+      - name: Apply Merlin32-safe ThunkSize pushes for this run
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('iigs/spbench/src/SPBench.s')
+          text = path.read_text(encoding='utf-8')
+          old = '         PushLong #ThunkSize'
+          new = '         pea   $0000\n         pea   ThunkSize'
+          count = text.count(old)
+
+          if count not in (0, 2):
+              raise SystemExit(
+                  f'Expected 0 or 2 PushLong #ThunkSize occurrences; found {count}'
+              )
+
+          if count == 2:
+              path.write_text(
+                  text.replace(old, new),
+                  encoding='utf-8',
+                  newline='\n'
+              )
+          PY
 
       - name: Build Merlin32
         shell: bash
