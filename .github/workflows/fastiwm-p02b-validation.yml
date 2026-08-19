@@ -92,7 +92,7 @@ jobs:
           name: fastprobe-p0.2b-deployable
           path: build-ci/fastprobe-p0.2b/
 
-  fujinet-source-build:
+  fujinet-rev1-build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -112,7 +112,7 @@ jobs:
           grep -q 'fastcfg.clock_speed_hz = 2 \* MHZ' /tmp/fujinet-firmware/lib/bus/iwm/iwm_ll.cpp
           grep -q 'iwm_send_fast_probe_spi' /tmp/fujinet-firmware/lib/bus/iwm/iwm_ll.h
 
-      - name: Create validation-only FujiApple Rev0 PlatformIO config
+      - name: Create exact FujiApple Rev1 PlatformIO config
         run: |
           set -euo pipefail
           cd /tmp/fujinet-firmware
@@ -130,10 +130,17 @@ jobs:
               if old not in t:
                   raise SystemExit('Missing PlatformIO sample pattern: ' + old)
               t = t.replace(old, new, 1)
+
           needle = '    -D DEBUG_SPEED=${env.monitor_speed}\n'
           if needle not in t:
               raise SystemExit('Unable to locate common build_flags block')
           t = t.replace(needle, needle + '    -D IIGS_FAST_IWM_PROBE\n', 1)
+
+          rev1 = '    ;-D REV1DETECT ; Only 3 people on earth need this enabled. You know who you are :P\n'
+          if rev1 not in t:
+              raise SystemExit('Unable to locate REV1DETECT build flag')
+          t = t.replace(rev1, '    -D REV1DETECT ; FujiApple early Rev1 hardware\n', 1)
+
           p.write_text(t, encoding='utf-8', newline='\n')
           PY
 
@@ -141,24 +148,60 @@ jobs:
         run: |
           python3 -m pip install --upgrade platformio
 
-      - name: Compile validation-only FujiApple Rev0 firmware
+      - name: Compile exact FujiApple Rev1 firmware
         working-directory: /tmp/fujinet-firmware
         run: |
           set -euo pipefail
           pio run -e fujiapple-rev0
 
-      - name: Archive validation build metadata
+      - name: Build LittleFS image
+        working-directory: /tmp/fujinet-firmware
         run: |
           set -euo pipefail
-          OUT="$GITHUB_WORKSPACE/build-ci/fujinet-p0.2b-validation"
+          pio run -e fujiapple-rev0 -t buildfs
+
+      - name: Package exact Rev1 firmware
+        run: |
+          set -euo pipefail
+          SRC=/tmp/fujinet-firmware/.pio/build/fujiapple-rev0
+          OUT="$GITHUB_WORKSPACE/build-ci/fujinet-p0.2b-rev1"
           mkdir -p "$OUT"
-          cp /tmp/fujinet-firmware/platformio.ini "$OUT/platformio.validation.ini"
+
+          for f in firmware.bin bootloader.bin partitions.bin littlefs.bin firmware.elf partitions.csv; do
+            if [ -f "$SRC/$f" ]; then
+              cp "$SRC/$f" "$OUT/$f"
+            fi
+          done
+
+          test -f "$OUT/firmware.bin"
+          test -f "$OUT/bootloader.bin"
+          test -f "$OUT/partitions.bin"
+
+          cp /tmp/fujinet-firmware/platformio.ini "$OUT/platformio.rev1.ini"
           git -C /tmp/fujinet-firmware diff -- lib/bus/iwm/iwm_ll.h lib/bus/iwm/iwm_ll.cpp > "$OUT/fujinet-p0.2b.patch"
-          printf '%s\n' 'VALIDATION ONLY - DO NOT FLASH UNTIL HARDWARE TARGET/FLAGS ARE CONFIRMED.' > "$OUT/README.txt"
-          printf '%s\n' 'Pinned upstream: b0a9483463c93ab61279d265467159c0d27c9f82' >> "$OUT/README.txt"
-          printf '%s\n' 'Validation target: fujiapple-rev0' >> "$OUT/README.txt"
+
+          cat > "$OUT/README.txt" <<'EOF'
+FujiNet Fast-IWM P0.2B - FujiApple early Rev1
+
+Pinned upstream:
+  b0a9483463c93ab61279d265467159c0d27c9f82
+
+Exact build selectors:
+  BUILD_APPLE
+  IWM
+  fujiapple-rev0
+  PINMAP_A2_REV0
+  REV1DETECT
+  IIGS_FAST_IWM_PROBE
+
+Normal SmartPort remains at the upstream 1 MHz transmitter timing.
+The private FASTPROBE responder alone uses the added 2 MHz transmitter.
+EOF
+
+          cd "$OUT"
+          sha256sum *.bin > SHA256SUMS.txt
 
       - uses: actions/upload-artifact@v4
         with:
-          name: fujinet-p0.2b-source-validation
-          path: build-ci/fujinet-p0.2b-validation/
+          name: fujinet-p0.2b-rev1-firmware
+          path: build-ci/fujinet-p0.2b-rev1/
