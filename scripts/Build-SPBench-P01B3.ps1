@@ -15,7 +15,7 @@ if ([string]::IsNullOrWhiteSpace($thisScript)) {
 
 $scriptRoot = Split-Path -Parent $thisScript
 $repoRoot = Split-Path -Parent $scriptRoot
-$patchScript = Join-Path $repoRoot 'tools\patch_spbench_p01b3.py'
+$patchScript = Join-Path $repoRoot 'tools\patch_spbench_p01b3_v2.py'
 $baseBuilder = Join-Path $scriptRoot 'Build-SPBench-P01B.ps1'
 
 if (-not (Test-Path -LiteralPath $patchScript -PathType Leaf)) {
