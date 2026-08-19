@@ -1,0 +1,160 @@
+name: Fast-IWM P0.2B Deterministic Build
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  paired-build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout experiment branch
+        uses: actions/checkout@v4
+        with:
+          ref: exp/fastiwm-p0.2b
+
+      - name: Build Merlin32
+        run: |
+          set -euo pipefail
+          git clone --depth 1 https://github.com/apple2accumulator/merlin32.git /tmp/merlin32
+          make -C /tmp/merlin32/Source
+
+      - name: Assemble FASTPROBE P0.2B
+        working-directory: iigs/fastprobe/src
+        run: |
+          set -euo pipefail
+          /tmp/merlin32/Source/merlin32 -V /tmp/merlin32/Library fastprobe.make.s
+          test -f FASTPROBE
+          test -f FASTPROBE_Output.txt
+
+      - name: Install .NET 10
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Build CiderPress II
+        run: |
+          set -euo pipefail
+          git clone --depth 1 https://github.com/fadden/CiderPress2.git /tmp/CiderPress2
+          cd /tmp/CiderPress2
+          ./mkcp2.sh
+
+      - name: Build FASTPROBE ProDOS image
+        run: |
+          set -euo pipefail
+          CP2="dotnet /tmp/CiderPress2/cp2/bin/Release/net10.0/cp2.dll"
+          OUT="$GITHUB_WORKSPACE/build-ci/fastiwm-p0.2b"
+          mkdir -p "$OUT/fastprobe"
+          cp iigs/fastprobe/src/FASTPROBE "$OUT/fastprobe/FASTPROBE#B30000"
+          cp iigs/fastprobe/src/FASTPROBE_Output.txt "$OUT/fastprobe/FASTPROBE_Output.txt"
+          printf '%s\n' 'FASTPROBE P0.2B - private IIgs/FujiNet 2us wire test' > "$OUT/fastprobe/README#040000"
+          $CP2 create-disk-image "$OUT/fastprobe/FASTPROBE-P0.2B.po" 32mb ProDOS
+          $CP2 rename "$OUT/fastprobe/FASTPROBE-P0.2B.po" : FASTPROBE
+          $CP2 add --from-naps --strip-paths "$OUT/fastprobe/FASTPROBE-P0.2B.po" "$OUT/fastprobe/FASTPROBE#B30000"
+          $CP2 add --from-naps --strip-paths "$OUT/fastprobe/FASTPROBE-P0.2B.po" "$OUT/fastprobe/README#040000"
+          $CP2 catalog --depth=max --wide "$OUT/fastprobe/FASTPROBE-P0.2B.po" | tee "$OUT/fastprobe/FASTPROBE-P0.2B.catalog.txt"
+          $CP2 test "$OUT/fastprobe/FASTPROBE-P0.2B.po"
+
+      - name: Clone pinned FujiNet firmware
+        run: |
+          set -euo pipefail
+          git clone https://github.com/FujiNetWIFI/fujinet-firmware.git /tmp/fujinet-firmware
+          cd /tmp/fujinet-firmware
+          git checkout b0a9483463c93ab61279d265467159c0d27c9f82
+
+      - name: Apply production-safe private responder
+        run: |
+          set -euo pipefail
+          python3 tools/patch_fujinet_fastiwm_p02b.py --firmware-root /tmp/fujinet-firmware
+          grep -q 'fast_iwm_probe_request' /tmp/fujinet-firmware/lib/bus/iwm/iwm_ll.cpp
+          grep -q 'if (fast_iwm_probe_request)' /tmp/fujinet-firmware/lib/bus/iwm/iwm.cpp
+          grep -q 'fastcfg.clock_speed_hz = 2 \* MHZ' /tmp/fujinet-firmware/lib/bus/iwm/iwm_ll.cpp
+          python3 - <<'PY'
+          from pathlib import Path
+          t = Path('/tmp/fujinet-firmware/lib/bus/iwm/iwm_ll.cpp').read_text()
+          a = t.index('void IRAM_ATTR phi_isr_handler')
+          b = t.index('inline void iwm_ll::iwm_extra_set', a)
+          if 'iwm_send_fast_probe_spi()' in t[a:b]:
+              raise SystemExit('blocking fast SPI transmit still present in GPIO ISR')
+          PY
+
+      - name: Create production Rev1 auto-detect PlatformIO config
+        run: |
+          set -euo pipefail
+          cd /tmp/fujinet-firmware
+          cp platformio-sample.ini platformio.ini
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('platformio.ini')
+          t = p.read_text(encoding='utf-8')
+          for old, new in (
+              (';build_platform = BUILD_APPLE', 'build_platform = BUILD_APPLE'),
+              (';build_bus      = IWM', 'build_bus      = IWM'),
+              (';build_board    = fujiapple-rev0         ; FujiApple Rev 0 Prototype',
+               'build_board    = fujiapple-rev0         ; FujiApple production Rev1 via runtime detection'),
+          ):
+              if old not in t:
+                  raise SystemExit('Missing PlatformIO sample pattern: ' + old)
+              t = t.replace(old, new, 1)
+          needle = '    -D DEBUG_SPEED=${env.monitor_speed}\n'
+          if needle not in t:
+              raise SystemExit('Unable to locate common build_flags block')
+          t = t.replace(needle, needle + '    -D IIGS_FAST_IWM_PROBE\n', 1)
+          p.write_text(t, encoding='utf-8', newline='\n')
+          PY
+          if grep -Eq '^[[:space:]]*-D[[:space:]]+REV1DETECT' platformio.ini; then
+            echo 'REV1DETECT must remain disabled' >&2; exit 20
+          fi
+          if grep -Eq '^[[:space:]]*-D[[:space:]]+MASTERIES_' platformio.ini; then
+            echo 'MASTERIES override must remain disabled' >&2; exit 21
+          fi
+          if grep -Eq '^[[:space:]]*-D[[:space:]]+NO3STATE([[:space:]]|$)' platformio.ini; then
+            echo 'NO3STATE override must remain disabled' >&2; exit 22
+          fi
+
+      - name: Install PlatformIO
+        run: python3 -m pip install --upgrade platformio
+
+      - name: Compile FujiNet production Rev1 firmware
+        working-directory: /tmp/fujinet-firmware
+        run: |
+          set -euo pipefail
+          pio run -e fujiapple-rev0
+          pio run -e fujiapple-rev0 -t buildfs
+
+      - name: Package paired release
+        run: |
+          set -euo pipefail
+          OUT="$GITHUB_WORKSPACE/build-ci/fastiwm-p0.2b"
+          FW="$OUT/fujinet"
+          SRC=/tmp/fujinet-firmware/.pio/build/fujiapple-rev0
+          mkdir -p "$FW"
+          for f in firmware.bin bootloader.bin partitions.bin littlefs.bin firmware.elf partitions.csv; do
+            if [ -f "$SRC/$f" ]; then cp "$SRC/$f" "$FW/$f"; fi
+          done
+          test -f "$FW/firmware.bin"
+          test -f "$FW/bootloader.bin"
+          test -f "$FW/partitions.bin"
+          cp /tmp/fujinet-firmware/platformio.ini "$FW/platformio.production-rev1.ini"
+          git -C /tmp/fujinet-firmware diff -- \
+            lib/bus/iwm/iwm_ll.h \
+            lib/bus/iwm/iwm_ll.cpp \
+            lib/bus/iwm/iwm.cpp > "$FW/fujinet-p0.2b.patch"
+          cat > "$OUT/README.txt" <<'EOF'
+Fast-IWM P0.2B paired production test
+
+Hardware: FujiApple production Rev1, using normal upstream runtime detection.
+Disabled overrides: REV1DETECT, MASTERIES_REV0, MASTERIES_REVAB, NO3STATE.
+Experimental flag: IIGS_FAST_IWM_PROBE.
+Normal SmartPort remains upstream 1 MHz.
+Private responder alone uses the added 2 MHz TX device.
+Blocking SPI transmit runs from systemBus::service(), not the GPIO ISR.
+EOF
+          find "$OUT" -type f -not -name SHA256SUMS.txt -print0 | sort -z | xargs -0 sha256sum > "$OUT/SHA256SUMS.txt"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fastiwm-p0.2b-production-paired
+          path: build-ci/fastiwm-p0.2b/
