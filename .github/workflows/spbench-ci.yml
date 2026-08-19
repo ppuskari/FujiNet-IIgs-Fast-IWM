@@ -1,76 +1,17 @@
-name: SPBENCH P0.1B CI
+name: SPBENCH P0.1B2 CI
 
 on:
   push:
     branches:
-      - exp/spbench-p0.1b
-  pull_request:
-    branches:
-      - exp/spbench-p0.1a
+      - exp/spbench-p0.1b2
   workflow_dispatch:
 
-permissions:
-  contents: write
-
 jobs:
-  repair_source:
-    if: github.event_name == 'push'
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout experiment branch
-        uses: actions/checkout@v4
-        with:
-          ref: exp/spbench-p0.1b
-          fetch-depth: 0
-
-      - name: Apply Merlin32-safe ThunkSize pushes
-        shell: bash
-        run: |
-          set -euo pipefail
-          python3 - <<'PY'
-          from pathlib import Path
-
-          path = Path('iigs/spbench/src/SPBench.s')
-          text = path.read_text(encoding='utf-8')
-          old = '         PushLong #ThunkSize'
-          new = '         pea   $0000\n         pea   ThunkSize'
-          count = text.count(old)
-
-          if count not in (0, 2):
-              raise SystemExit(
-                  f'Expected 0 or 2 PushLong #ThunkSize occurrences; found {count}'
-              )
-
-          if count == 2:
-              path.write_text(
-                  text.replace(old, new),
-                  encoding='utf-8',
-                  newline='\n'
-              )
-              print('Applied two Merlin32-safe ThunkSize replacements.')
-          else:
-              print('Source already repaired; no replacement required.')
-          PY
-
-          if git diff --quiet -- iigs/spbench/src/SPBench.s; then
-            echo 'No source repair commit required.'
-            exit 0
-          fi
-
-          git config user.name 'SPBENCH CI'
-          git config user.email 'actions@users.noreply.github.com'
-          git add iigs/spbench/src/SPBench.s
-          git commit -m 'Fix Merlin32 ThunkSize immediate expansion'
-          git push origin HEAD:exp/spbench-p0.1b
-
   powershell51:
     runs-on: windows-latest
-
     steps:
       - name: Checkout experiment
         uses: actions/checkout@v4
-
       - name: Parse builder with Windows PowerShell 5.1
         shell: powershell
         run: |
@@ -78,76 +19,45 @@ jobs:
           if ($PSVersionTable.PSVersion.Major -ne 5) {
               throw "Expected Windows PowerShell 5.x"
           }
-
           $tokens = $null
           $errors = $null
           $path = (Resolve-Path '.\scripts\Build-SPBench-P01B.ps1').Path
-
           [System.Management.Automation.Language.Parser]::ParseFile(
-              $path,
-              [ref]$tokens,
-              [ref]$errors
+              $path, [ref]$tokens, [ref]$errors
           ) | Out-Null
-
           if ($errors.Count -ne 0) {
-              $errors | ForEach-Object {
-                  Write-Host $_.Message
-              }
+              $errors | ForEach-Object { Write-Host $_.Message }
               throw "PowerShell 5.1 parse failed"
           }
-
           Write-Host "PowerShell 5.1 parse passed."
 
   assemble:
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout experiment
         uses: actions/checkout@v4
 
-      - name: Apply Merlin32-safe ThunkSize pushes for this run
+      - name: Apply P0.1B2 dispatcher correction
         shell: bash
         run: |
           set -euo pipefail
-          python3 - <<'PY'
-          from pathlib import Path
-
-          path = Path('iigs/spbench/src/SPBench.s')
-          text = path.read_text(encoding='utf-8')
-          old = '         PushLong #ThunkSize'
-          new = '         pea   $0000\n         pea   ThunkSize'
-          count = text.count(old)
-
-          if count not in (0, 2):
-              raise SystemExit(
-                  f'Expected 0 or 2 PushLong #ThunkSize occurrences; found {count}'
-              )
-
-          if count == 2:
-              path.write_text(
-                  text.replace(old, new),
-                  encoding='utf-8',
-                  newline='\n'
-              )
-          PY
+          python3 tools/patch_spbench_p01b2.py
+          grep -q "SPBENCH P0.1B2" iigs/spbench/src/SPBench.s
+          grep -q 'lda   #\$C50D' iigs/spbench/src/SPBench.s
 
       - name: Build Merlin32
         shell: bash
         run: |
           set -euo pipefail
-          git clone --depth 1 \
-            https://github.com/apple2accumulator/merlin32.git \
-            /tmp/merlin32
+          git clone --depth 1 https://github.com/apple2accumulator/merlin32.git /tmp/merlin32
           make -C /tmp/merlin32/Source
 
-      - name: Assemble SPBENCH P0.1B
+      - name: Assemble SPBENCH P0.1B2
         shell: bash
         working-directory: iigs/spbench/src
         run: |
           set -euo pipefail
-          /tmp/merlin32/Source/merlin32 \
-            -V /tmp/merlin32/Library \
-            spbench.make.s
+          /tmp/merlin32/Source/merlin32 -V /tmp/merlin32/Library spbench.make.s
           test -f SPBENCH
           test -f SPBENCH_Output.txt
           ls -l SPBENCH SPBENCH_Output.txt
@@ -161,51 +71,39 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          git clone --depth 1 \
-            https://github.com/fadden/CiderPress2.git \
-            /tmp/CiderPress2
+          git clone --depth 1 https://github.com/fadden/CiderPress2.git /tmp/CiderPress2
           cd /tmp/CiderPress2
           ./mkcp2.sh
           test -f cp2/bin/Release/net10.0/cp2.dll
 
-      - name: Build and validate ProDOS deployment image
+      - name: Build and validate P0.1B2 deployment image
         shell: bash
         run: |
           set -euo pipefail
           CP2="dotnet /tmp/CiderPress2/cp2/bin/Release/net10.0/cp2.dll"
-          OUT="$GITHUB_WORKSPACE/build-ci/spbench-p0.1b"
+          OUT="$GITHUB_WORKSPACE/build-ci/spbench-p0.1b2"
           mkdir -p "$OUT"
-
           cp iigs/spbench/src/SPBENCH "$OUT/SPBENCH#B30000"
           cp iigs/spbench/src/SPBENCH_Output.txt "$OUT/SPBENCH_Output.txt"
-
           cat > "$OUT/README#040000" <<'EOF'
-          SPBENCH P0.1B - direct SmartPort baseline
+          SPBENCH P0.1B2 - IIgs SmartPort dispatcher correction
 
-          Mount this image on FujiNet and launch SPBENCH from this volume.
-          GS/OS is used only to identify the prefix device. The timed path
-          issues direct extended SmartPort READBLOCK $41 calls, 512 bytes
-          per transaction, with the same runs used by P0.1A.
+          Same raw extended READBLOCK $41 benchmark as P0.1B.
+          The only transport change is forcing the known IIgs slot-5
+          SmartPort entry $C50D.  The screen also prints the byte read
+          from $C5FF for diagnosis.
           EOF
-
-          $CP2 create-disk-image "$OUT/SPBENCH-P0.1B.po" 32mb ProDOS
-          $CP2 rename "$OUT/SPBENCH-P0.1B.po" : SPBENCH
-          $CP2 add --from-naps --strip-paths \
-            "$OUT/SPBENCH-P0.1B.po" "$OUT/SPBENCH#B30000"
-          $CP2 add --from-naps --strip-paths \
-            "$OUT/SPBENCH-P0.1B.po" "$OUT/README#040000"
-          $CP2 catalog --depth=max --wide \
-            "$OUT/SPBENCH-P0.1B.po" | tee "$OUT/SPBENCH-P0.1B.catalog.txt"
-          $CP2 test "$OUT/SPBENCH-P0.1B.po"
-
+          $CP2 create-disk-image "$OUT/SPBENCH-P0.1B2.po" 32mb ProDOS
+          $CP2 rename "$OUT/SPBENCH-P0.1B2.po" : SPBENCH
+          $CP2 add --from-naps --strip-paths "$OUT/SPBENCH-P0.1B2.po" "$OUT/SPBENCH#B30000"
+          $CP2 add --from-naps --strip-paths "$OUT/SPBENCH-P0.1B2.po" "$OUT/README#040000"
+          $CP2 catalog --depth=max --wide "$OUT/SPBENCH-P0.1B2.po" | tee "$OUT/SPBENCH-P0.1B2.catalog.txt"
+          $CP2 test "$OUT/SPBENCH-P0.1B2.po"
           cd "$OUT"
-          sha256sum \
-            'SPBENCH#B30000' \
-            SPBENCH-P0.1B.po \
-            > SHA256SUMS.txt
+          sha256sum 'SPBENCH#B30000' SPBENCH-P0.1B2.po > SHA256SUMS.txt
 
-      - name: Upload deployable SPBENCH P0.1B
+      - name: Upload deployable SPBENCH P0.1B2
         uses: actions/upload-artifact@v4
         with:
-          name: spbench-p0.1b-deployable
-          path: build-ci/spbench-p0.1b/
+          name: spbench-p0.1b2-deployable
+          path: build-ci/spbench-p0.1b2/
