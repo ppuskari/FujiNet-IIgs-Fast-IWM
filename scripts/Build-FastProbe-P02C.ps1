@@ -26,10 +26,11 @@ if ($null -eq $python) {
 $patchB3 = Join-Path $repoRoot 'tools\patch_spbench_p01b3_v2.py'
 $fixB3 = Join-Path $repoRoot 'tools\fix_spbench_p01b3_branches.py'
 $patchC = Join-Path $repoRoot 'tools\run_spbench_fastiwm_p02c.py'
+$fixC = Join-Path $repoRoot 'tools\fix_fastiwm_p02c_branches.py'
 $baseBuilder = Join-Path $scriptRoot 'Build-SPBench-P01B.ps1'
 $cp2 = Join-Path $DevRoot 'tools\cp2\cp2.exe'
 
-foreach ($required in @($patchB3,$fixB3,$patchC,$baseBuilder,$cp2)) {
+foreach ($required in @($patchB3,$fixB3,$patchC,$fixC,$baseBuilder,$cp2)) {
     if (-not (Test-Path -LiteralPath $required -PathType Leaf)) {
         throw ('Missing required build input: ' + $required)
     }
@@ -50,6 +51,9 @@ try {
 
     & $python.Source $patchC --project-root $repoRoot
     if ($LASTEXITCODE -ne 0) { throw 'FASTPROBE P0.2C host patch failed.' }
+
+    & $python.Source $fixC --project-root $repoRoot
+    if ($LASTEXITCODE -ne 0) { throw 'FASTPROBE P0.2C branch fix failed.' }
 }
 finally {
     Pop-Location
