@@ -1,0 +1,90 @@
+name: IWMPROBE P0.2A4 CI
+
+on:
+  push:
+    branches:
+      - exp/iwmprobe-p0.2a4
+  workflow_dispatch:
+
+jobs:
+  powershell51:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Parse builder with Windows PowerShell 5.1
+        shell: powershell
+        run: |
+          Write-Host ("Windows PowerShell " + $PSVersionTable.PSVersion)
+          if ($PSVersionTable.PSVersion.Major -ne 5) {
+              throw "Expected Windows PowerShell 5.x"
+          }
+          $tokens = $null
+          $errors = $null
+          $path = (Resolve-Path '.\scripts\Build-IWMProbe-P02A4.ps1').Path
+          [System.Management.Automation.Language.Parser]::ParseFile(
+              $path,
+              [ref]$tokens,
+              [ref]$errors
+          ) | Out-Null
+          if ($errors.Count -ne 0) {
+              $errors | ForEach-Object { Write-Host $_.Message }
+              throw "PowerShell 5.1 parse failed"
+          }
+          Write-Host "PowerShell 5.1 parse passed."
+
+  assemble:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Apply P0.2A3 and P0.2A4 patches
+        run: |
+          set -euo pipefail
+          python3 tools/patch_iwmprobe_p02a3.py
+          python3 tools/patch_iwmprobe_p02a4.py
+          grep -q 'IWMPROBE P0.2A4' iigs/iwmprobe/src/IWMProbe.s
+          grep -q 'Immediate: pre=' iigs/iwmprobe/src/IWMProbe.s
+          grep -q 'PreWriteStatus' iigs/iwmprobe/src/IWMProbe.s
+          grep -q 'sta   >IWM_Q7_ON' iigs/iwmprobe/src/IWMProbe.s
+      - name: Build Merlin32
+        run: |
+          set -euo pipefail
+          git clone --depth 1 https://github.com/apple2accumulator/merlin32.git /tmp/merlin32
+          make -C /tmp/merlin32/Source
+      - name: Assemble IWMPROBE P0.2A4
+        working-directory: iigs/iwmprobe/src
+        run: |
+          set -euo pipefail
+          /tmp/merlin32/Source/merlin32 -V /tmp/merlin32/Library iwmprobe.make.s
+          test -f IWMPROBE
+          test -f IWMPROBE_Output.txt
+      - name: Install .NET 10
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+      - name: Build CiderPress II cp2
+        run: |
+          set -euo pipefail
+          git clone --depth 1 https://github.com/fadden/CiderPress2.git /tmp/CiderPress2
+          cd /tmp/CiderPress2
+          ./mkcp2.sh
+      - name: Build and validate image
+        run: |
+          set -euo pipefail
+          CP2="dotnet /tmp/CiderPress2/cp2/bin/Release/net10.0/cp2.dll"
+          OUT="$GITHUB_WORKSPACE/build-ci/iwmprobe-p0.2a4"
+          mkdir -p "$OUT"
+          cp iigs/iwmprobe/src/IWMPROBE "$OUT/IWMPROBE#B30000"
+          cp iigs/iwmprobe/src/IWMPROBE_Output.txt "$OUT/IWMPROBE_Output.txt"
+          printf 'IWMPROBE P0.2A4 - NetBSD-style IWM write with immediate readback\n' > "$OUT/README#040000"
+          $CP2 create-disk-image "$OUT/IWMPROBE-P0.2A4.po" 32mb ProDOS
+          $CP2 rename "$OUT/IWMPROBE-P0.2A4.po" : IWMPROBE
+          $CP2 add --from-naps --strip-paths "$OUT/IWMPROBE-P0.2A4.po" "$OUT/IWMPROBE#B30000"
+          $CP2 add --from-naps --strip-paths "$OUT/IWMPROBE-P0.2A4.po" "$OUT/README#040000"
+          $CP2 catalog --depth=max --wide "$OUT/IWMPROBE-P0.2A4.po" | tee "$OUT/IWMPROBE-P0.2A4.catalog.txt"
+          $CP2 test "$OUT/IWMPROBE-P0.2A4.po"
+          cd "$OUT"
+          sha256sum 'IWMPROBE#B30000' IWMPROBE-P0.2A4.po > SHA256SUMS.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: iwmprobe-p0.2a4-deployable
+          path: build-ci/iwmprobe-p0.2a4/
