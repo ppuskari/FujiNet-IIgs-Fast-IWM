@@ -52,6 +52,21 @@ def main() -> None:
         'P0.2C6 banner',
     )
 
+    text = replace_once(
+        text,
+        '''* Technical Note #30: Read Data requires DRIVE ENABLED plus Q7=0/Q6=0.
+         lda   >IWM_DRIVE_ON
+
+* P0.2C6: C4 delayed-autosend needs no GPIO/phase trigger.
+''',
+        '''* P0.2C7: defer DRIVE ENABLE until after the IWM mode register is
+* switched to the documented 2-us setting while the drive is disabled.
+
+* P0.2C6: C4 delayed-autosend needs no GPIO/phase trigger.
+''',
+        'early P0.2C5 drive enable',
+    )
+
     old_entry = '''* P0.2C6: C4 delayed-autosend needs no GPIO/phase trigger.
 * Preserve the phase state left by the proven ROM SmartPort arm call.
 * Select only the IWM Read-Data register: DRIVE ENABLED, Q7=0, Q6=0.
@@ -63,7 +78,7 @@ def main() -> None:
 '''
     new_entry = '''* P0.2C7: the FujiNet side already transmits with 2-us bit cells.
 * The IIgs IWM must also have mode bit C set or its receive shifter remains
-* in the normal 4-us SmartPort/5.25-inch cell timing.  Save the live mode,
+* in the normal 4-us SmartPort/5.25-inch cell timing. Save the live mode,
 * program the documented 3.5-inch fast mode $0F, then enter Read Data.
          lda   >IWM_DRIVE_OFF
          lda   >IWM_Q6_ON
@@ -154,7 +169,6 @@ FastBufferC     ds    512
         if marker not in text:
             raise SystemExit(f'Missing P0.2C7 marker: {marker}')
 
-    # The fast receive path must explicitly select $0F before enabling Read Data.
     start = text.index('ReadFastPacketC')
     end = text.index('FastFindD5C', start)
     receive_entry = text[start:end]
