@@ -4,6 +4,9 @@ on:
   push:
     branches:
       - exp/fastiwm-p0.2c4t100c
+  pull_request:
+    branches:
+      - main
   workflow_dispatch:
 
 jobs:
