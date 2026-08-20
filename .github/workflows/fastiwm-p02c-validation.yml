@@ -46,6 +46,7 @@ jobs:
           python3 tools/patch_spbench_p01b3_v2.py
           python3 tools/fix_spbench_p01b3_branches.py
           python3 tools/run_spbench_fastiwm_p02c.py --project-root "$GITHUB_WORKSPACE"
+          python3 tools/fix_fastiwm_p02c_branches.py --project-root "$GITHUB_WORKSPACE"
           grep -q 'FASTPROBE P0.2C' iigs/spbench/src/SPBench.s
           grep -q 'ArmSmartPortCall' iigs/spbench/src/SPBench.s
           grep -q 'FastArmBlockHi' iigs/spbench/src/SPBench.s
