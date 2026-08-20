@@ -1,0 +1,175 @@
+name: Fast-IWM P0.2C Validation
+
+on:
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  powershell51:
+    if: startsWith(github.head_ref, 'exp/fastiwm-p0.2c')
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Parse P0.2C PowerShell with Windows PowerShell 5.1
+        shell: powershell
+        run: |
+          if ($PSVersionTable.PSVersion.Major -ne 5) { throw 'Expected Windows PowerShell 5.x' }
+          $paths = @(
+            '.\scripts\Build-FastProbe-P02C.ps1',
+            '.\scripts\Build-FujiNet-P02C.ps1'
+          )
+          foreach ($item in $paths) {
+            $tokens = $null
+            $errors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile(
+              (Resolve-Path $item).Path,
+              [ref]$tokens,
+              [ref]$errors
+            ) | Out-Null
+            if ($errors.Count -ne 0) {
+              $errors | ForEach-Object { Write-Host $_.Message }
+              throw ('PowerShell 5.1 parse failed: ' + $item)
+            }
+            Write-Host ('PASS: ' + $item)
+          }
+
+  host:
+    if: startsWith(github.head_ref, 'exp/fastiwm-p0.2c')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Apply proven B3 path and P0.2C host overlay
+        run: |
+          set -euo pipefail
+          python3 tools/patch_spbench_p01b3_v2.py
+          python3 tools/fix_spbench_p01b3_branches.py
+          python3 tools/run_spbench_fastiwm_p02c.py --project-root "$GITHUB_WORKSPACE"
+          grep -q 'FASTPROBE P0.2C' iigs/spbench/src/SPBench.s
+          grep -q 'ArmSmartPortCall' iigs/spbench/src/SPBench.s
+          grep -q 'FastArmBlockHi' iigs/spbench/src/SPBench.s
+          grep -q 'IWM_PH2_OFF' iigs/spbench/src/SPBench.s
+
+      - name: Build Merlin32
+        run: |
+          set -euo pipefail
+          git clone --depth 1 https://github.com/apple2accumulator/merlin32.git /tmp/merlin32
+          make -C /tmp/merlin32/Source
+
+      - name: Assemble P0.2C host
+        working-directory: iigs/spbench/src
+        run: |
+          set -euo pipefail
+          /tmp/merlin32/Source/merlin32 -V /tmp/merlin32/Library spbench.make.s
+          test -f SPBENCH
+          test -f SPBENCH_Output.txt
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Build cp2 and package P0.2C PO
+        run: |
+          set -euo pipefail
+          git clone --depth 1 https://github.com/fadden/CiderPress2.git /tmp/CiderPress2
+          cd /tmp/CiderPress2
+          ./mkcp2.sh
+          CP2="dotnet /tmp/CiderPress2/cp2/bin/Release/net10.0/cp2.dll"
+          OUT="$GITHUB_WORKSPACE/build-ci/p0.2c-host"
+          mkdir -p "$OUT"
+          cp "$GITHUB_WORKSPACE/iigs/spbench/src/SPBENCH" "$OUT/FASTPROBE#B30000"
+          cp "$GITHUB_WORKSPACE/iigs/spbench/src/SPBENCH_Output.txt" "$OUT/FASTPROBE_Output.txt"
+          printf '%s\n' 'FASTPROBE P0.2C - SmartPort-armed Fast-IWM' > "$OUT/README#040000"
+          $CP2 create-disk-image "$OUT/FASTPROBE-P0.2C.po" 32mb ProDOS
+          $CP2 rename "$OUT/FASTPROBE-P0.2C.po" : FASTPROBE
+          $CP2 add --from-naps --strip-paths "$OUT/FASTPROBE-P0.2C.po" "$OUT/FASTPROBE#B30000"
+          $CP2 add --from-naps --strip-paths "$OUT/FASTPROBE-P0.2C.po" "$OUT/README#040000"
+          $CP2 catalog --depth=max --wide "$OUT/FASTPROBE-P0.2C.po" | tee "$OUT/catalog.txt"
+          $CP2 test "$OUT/FASTPROBE-P0.2C.po"
+          cd "$OUT"
+          sha256sum 'FASTPROBE#B30000' FASTPROBE-P0.2C.po > SHA256SUMS.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fastiwm-p0.2c-host
+          path: build-ci/p0.2c-host/
+
+  firmware:
+    if: startsWith(github.head_ref, 'exp/fastiwm-p0.2c')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Clone pinned FujiNet
+        run: |
+          set -euo pipefail
+          git clone https://github.com/FujiNetWIFI/fujinet-firmware.git /tmp/fujinet
+          git -C /tmp/fujinet checkout b0a9483463c93ab61279d265467159c0d27c9f82
+
+      - name: Apply P0.2C firmware patch
+        run: |
+          set -euo pipefail
+          python3 tools/patch_fujinet_fastiwm_p02c.py \
+            --project-root "$GITHUB_WORKSPACE" \
+            --firmware-root /tmp/fujinet
+          grep -q 'FASTIWM ARM block=7fa55a' /tmp/fujinet/lib/bus/iwm/iwm.cpp
+          grep -q '0b1011' /tmp/fujinet/lib/bus/iwm/iwm_ll.cpp
+          ! grep -q 'if (_phases == 0b1110)' /tmp/fujinet/lib/bus/iwm/iwm_ll.cpp
+
+      - name: Create production Rev1 runtime-detect config
+        run: |
+          set -euo pipefail
+          cd /tmp/fujinet
+          cp platformio-sample.ini platformio.ini
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('platformio.ini')
+          t=p.read_text()
+          for old,new in (
+            (';build_platform = BUILD_APPLE','build_platform = BUILD_APPLE'),
+            (';build_bus      = IWM','build_bus      = IWM'),
+            (';build_board    = fujiapple-rev0         ; FujiApple Rev 0 Prototype',
+             'build_board    = fujiapple-rev0         ; production Rev1 runtime detection'),
+          ):
+            if old not in t: raise SystemExit(old)
+            t=t.replace(old,new,1)
+          needle='    -D DEBUG_SPEED=${env.monitor_speed}\n'
+          if needle not in t: raise SystemExit('build flag anchor')
+          t=t.replace(needle,needle+'    -D IIGS_FAST_IWM_PROBE\n',1)
+          p.write_text(t)
+          PY
+          ! grep -Eq '^[[:space:]]*-D[[:space:]]+(REV1DETECT|MASTERIES_REV0|MASTERIES_REVAB|NO3STATE)([[:space:]]|$)' platformio.ini
+
+      - name: Install PlatformIO
+        run: python3 -m pip install --upgrade platformio
+
+      - name: Compile P0.2C production Rev1 firmware
+        working-directory: /tmp/fujinet
+        run: pio run -e fujiapple-rev0
+
+      - name: Verify linked experiment and package
+        run: |
+          set -euo pipefail
+          ELF=/tmp/fujinet/.pio/build/fujiapple-rev0/firmware.elf
+          BIN=/tmp/fujinet/.pio/build/fujiapple-rev0/firmware.bin
+          NM=$HOME/.platformio/packages/toolchain-xtensa-esp-elf/bin/xtensa-esp32-elf-nm
+          test -f "$ELF"
+          test -f "$BIN"
+          "$NM" -C "$ELF" | grep 'iwm_send_fast_probe_spi'
+          "$NM" -C "$ELF" | grep 'fast_iwm_probe_armed'
+          "$NM" -C "$ELF" | grep 'fast_iwm_probe_request'
+          OUT="$GITHUB_WORKSPACE/build-ci/p0.2c-firmware"
+          mkdir -p "$OUT"
+          cp "$BIN" "$OUT/fujinet-p0.2c-firmware.bin"
+          cp "$ELF" "$OUT/fujinet-p0.2c-firmware.elf"
+          cp /tmp/fujinet/platformio.ini "$OUT/platformio.production-rev1.ini"
+          git -C /tmp/fujinet diff -- lib/bus/iwm/iwm_ll.h lib/bus/iwm/iwm_ll.cpp lib/bus/iwm/iwm.cpp > "$OUT/fujinet-p0.2c.patch"
+          printf '%s\n' 'Application-only flash at 0x10000. Production Rev1 runtime detection; REV1DETECT OFF.' > "$OUT/README.txt"
+          cd "$OUT"
+          sha256sum fujinet-p0.2c-firmware.bin > SHA256SUMS.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fastiwm-p0.2c-firmware
+          path: build-ci/p0.2c-firmware/
