@@ -1,0 +1,52 @@
+name: Build Fast-IWM P0.2C4T100 firmware
+
+on:
+  push:
+    branches:
+      - exp/fastiwm-p0.2c4t100c
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout experiment repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install PlatformIO
+        shell: powershell
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install platformio
+
+      - name: Clone pinned FujiNet firmware
+        shell: powershell
+        run: |
+          git clone https://github.com/FujiNetWIFI/fujinet-firmware.git fujinet-firmware
+          if ($LASTEXITCODE -ne 0) { throw 'FujiNet clone failed.' }
+          git -C fujinet-firmware checkout b0a9483463c93ab61279d265467159c0d27c9f82
+          if ($LASTEXITCODE -ne 0) { throw 'Pinned FujiNet checkout failed.' }
+
+      - name: Build P0.2C4T100
+        shell: powershell
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass `
+            -File .\scripts\Build-FujiNet-P02C4T100.ps1 `
+            -DevRoot $PWD.Path `
+            -FirmwareRoot (Join-Path $PWD.Path 'fujinet-firmware')
+          if ($LASTEXITCODE -ne 0) { throw 'P0.2C4T100 build failed.' }
+
+      - name: Upload deployable firmware
+        uses: actions/upload-artifact@v4
+        with:
+          name: fastiwm-p0.2c4t100-firmware
+          path: build/fastiwm-p0.2c4t100-firmware/
+          if-no-files-found: error
+          retention-days: 7
