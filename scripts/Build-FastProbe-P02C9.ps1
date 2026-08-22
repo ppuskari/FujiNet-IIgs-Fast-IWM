@@ -116,7 +116,8 @@ $currentOverlayDependencies = @(
     'tools\patch_spbench_fastiwm_p02d2_softreturn.py',
     'tools\patch_spbench_fastiwm_p02d3_endpoint.py',
     'tools\patch_spbench_fastiwm_p02d4_spi_wait.py',
-    'tools\patch_spbench_fastiwm_p02d5_thunk_flags.py'
+    'tools\patch_spbench_fastiwm_p02d5_thunk_flags.py',
+    'tools\patch_spbench_fastiwm_p02d6_direct_ring.py'
 ) | ForEach-Object { Join-Path $repoRoot $_ } |
     Where-Object { Test-Path -LiteralPath $_ -PathType Leaf }
 $snapshotOverlay = $null
